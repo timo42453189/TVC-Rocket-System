@@ -34,19 +34,19 @@ Servo sy;
 
 
 // PID variable Setup
+// PID variable Setup
 double setPoint = 0;
-
 double inputX;
 double KpX = 0.6;
-double KiX = 0.005;
-double KdX = 0.2;
+double KiX = 0.05;
+double KdX = 0.01;
 double driverOutX;
 PID PID_X(&inputX, &driverOutX, &setPoint,KpX,KiX,KdX, DIRECT);
 
 double inputY;
-double KpY = 1.3;
-double KiY = 0.005;
-double KdY = 0.2;
+double KpY = 0.6;
+double KiY = 0.05;
+double KdY = 0.01;
 double driverOutY;
 PID PID_Y(&inputY, &driverOutY, &setPoint,KpY,KiY,KdY, DIRECT);
 
