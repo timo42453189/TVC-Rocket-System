@@ -191,6 +191,7 @@ void loop() {
     Serial.println(rot.pitch);
     sx.write(SX_CENTER-driverOutX);
     sy.write(SY_CENTER+driverOutY);
+    delay(50);
   }
 
 }
