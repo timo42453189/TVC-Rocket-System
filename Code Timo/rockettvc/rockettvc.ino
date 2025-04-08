@@ -1,197 +1,225 @@
+#include <Arduino.h>
 #include <Adafruit_BNO055.h>
 #include <Adafruit_Sensor.h>
 #include <utility/imumaths.h>
 #include <Wire.h>
 #include <Servo.h>
 #include <PID_v1.h>
+#include <SPIFFS.h>
+#include <WiFi.h>
+#include <WebServer.h>
 
 #define SX_CENTER 89
 #define SX_HIGH 104
 #define SX_LOW 76
-#define SX_PIN 10
+#define SX_PIN 14
 
 #define SY_CENTER 85
 #define SY_HIGH 120
 #define SY_LOW 50
-#define SY_PIN 7
-
-#define ALPHA 0.98
+#define SY_PIN 27
 
 #define MAX_YAW_DIFF 30.0
 #define MAX_PITCH_DIFF 30.0
 
+// Globale Variablen für den Puffer
+String buffer = "";                // Puffer für die Daten
+const size_t bufferLimit = 512;    // Maximale Puffergröße in Bytes
+
 struct Rotation {
-    double yaw;
-    double pitch;
+  double yaw;
+  double pitch;
 };
-
-
-int minVal=-100;
-int maxVal=100;
 
 Servo sx;
 Servo sy;
 
+unsigned long lastFlush = 0;
+const unsigned long flushInterval = 5000;
 
-// PID variable Setup
-// PID variable Setup
 double setPoint = 0;
-double inputX;
-double KpX = 0.6;
-double KiX = 0.05;
-double KdX = 0.01;
-double driverOutX;
-PID PID_X(&inputX, &driverOutX, &setPoint,KpX,KiX,KdX, DIRECT);
+double inputX, inputY;
+double KpX = 0.6, KiX = 0.05, KdX = 0.01;
+double KpY = 0.6, KiY = 0.05, KdY = 0.01;
+double driverOutX, driverOutY;
 
-double inputY;
-double KpY = 0.6;
-double KiY = 0.05;
-double KdY = 0.01;
-double driverOutY;
-PID PID_Y(&inputY, &driverOutY, &setPoint,KpY,KiY,KdY, DIRECT);
+PID PID_X(&inputX, &driverOutX, &setPoint, KpX, KiX, KdX, DIRECT);
+PID PID_Y(&inputY, &driverOutY, &setPoint, KpY, KiY, KdY, DIRECT);
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
-
 float correction_angle = 90.0;
 bool calibrated = false;
 
-int init_pid(){
-  // PID X
-  PID_X.SetMode(AUTOMATIC);
-  PID_X.SetOutputLimits(-(SX_HIGH-SX_CENTER), (SX_HIGH-SX_CENTER));
-  // PID y
-  PID_Y.SetMode(AUTOMATIC);
-  PID_Y.SetOutputLimits(-(SY_HIGH-SY_CENTER),  (SY_HIGH-SY_CENTER));
-  if (PID_X.GetMode() == AUTOMATIC && PID_Y.GetMode() == AUTOMATIC){
-    return 0;
-  } else {
-    return 1;
-  }
+const char* ap_ssid = "Rocket-Calibration";
+const char* ap_password = "12345678";
+WebServer server(80);
+bool ap_mode = false;
+
+void startAccessPoint() {
+  WiFi.softAP(ap_ssid, ap_password);
+  Serial.println("Access Point gestartet!");
+  Serial.print("IP Adresse: ");
+  Serial.println(WiFi.softAPIP());
+
+  server.on("/", []() {
+    uint8_t sys, gyro, accel, mag;
+    bno.getCalibration(&sys, &gyro, &accel, &mag);
+    String html = "<h1>Kalibrierung</h1>";
+    html += "System: " + String(sys) + "<br>";
+    html += "Gyro: " + String(gyro) + "<br>";
+    html += "Accel: " + String(accel) + "<br>";
+    html += "Mag: " + String(mag) + "<br>";
+    server.send(200, "text/html", html);
+  });
+
+  server.begin();
+  ap_mode = true;
 }
 
-void init_servo(){
+void stopAccessPoint() {
+  server.stop();
+  WiFi.softAPdisconnect(true);
+  Serial.println("Access Point deaktiviert.");
+  ap_mode = false;
+}
+
+int init_pid() {
+  PID_X.SetMode(AUTOMATIC);
+  PID_X.SetOutputLimits(-(SX_HIGH - SX_CENTER), (SX_HIGH - SX_CENTER));
+  PID_Y.SetMode(AUTOMATIC);
+  PID_Y.SetOutputLimits(-(SY_HIGH - SY_CENTER), (SY_HIGH - SY_CENTER));
+  return (PID_X.GetMode() == AUTOMATIC && PID_Y.GetMode() == AUTOMATIC) ? 0 : 1;
+}
+
+void init_servo() {
   sx.attach(SX_PIN);
   sy.attach(SY_PIN);
 }
 
-void displayCalStatus(void) {
-  uint8_t system, gyro, accel, mag;
-  system = gyro = accel = mag = 0;
-  bno.getCalibration(&system, &gyro, &accel, &mag);
-  Serial.print("\t");
-  if (!system) {
-    Serial.print("! ");
+void displayCalStatus() {
+  uint8_t sys, gyro, accel, mag;
+  bno.getCalibration(&sys, &gyro, &accel, &mag);
+  if (mag == 3 && sys == 3 && gyro == 3 && accel == 3) {
+    calibrated = true;
   }
-  Serial.print("Sys:");
-  Serial.print(system, DEC);
-  Serial.print(" G:");
-  Serial.print(gyro, DEC);
-  Serial.print(" A:");
-  Serial.print(accel, DEC);
-  Serial.print(" M:");
-  Serial.println(mag, DEC);
-  if (mag == 3 && system == 3 && gyro == 3 && accel == 3){calibrated = true;}
 }
 
-int init_imu(){
+int init_imu() {
   int status = bno.begin();
   Serial.println(status);
   bno.setExtCrystalUse(true);
-  //calibrateIMU();
   return status;
 }
 
-void test_servo_X(){
-  sx.write(SX_HIGH);
-  delay(500);
-  sx.write(SX_CENTER);
-  delay(500);
-  sx.write(SX_LOW);
-  delay(500);
-  sx.write(SX_CENTER);
+void init_SPIFFS() {
+  SPIFFS.begin(true);
+  File file = SPIFFS.open("/data.csv", FILE_APPEND);
+  file.println("Time,Yaw,Pitch,DriverOutX,DriverOutY,AccelZ");
+  file.close();
 }
-
-void test_servo_Y(){
-  sy.write(SY_HIGH);
-  delay(500);
-  sy.write(SY_CENTER);
-  delay(500);
-  sy.write(SY_LOW);
-}
-
-
-
-void setup(void) {
-  Serial.begin(115200);
-  int status_pid = init_pid();
-  if (status_pid == 1){Serial.println("PID setup not succesfull"); while (1){}};
-  init_servo();
-  int status_imu = init_imu();
-  if (status_imu == 0){Serial.println("IMU setup not succesfull"); while (1){}};
-  //test_servo_X();
-  //test_servo_Y();
-}
-
-
-void computeX(double inputXx){
-  inputX = inputXx;
-  PID_X.Compute();
-}
-
-void computeY(double inputYy){
-  inputY = inputYy;
-  PID_Y.Compute();
-}
-
-float last_yaw = 0;
-float last_pitch = 0;
-
 
 Rotation getRotation() {
-    imu::Quaternion quat = bno.getQuat();
-    imu::Vector<3> eul = quat.toEuler();
-    float raw_yaw = eul.z() * (180.0 / 3.14159) - correction_angle;
-    float raw_pitch = eul.y() * (180.0 / 3.14159);
-    if (isnan(raw_pitch)) {
-        raw_pitch = last_pitch;
-    } else {
-        if (abs(raw_pitch - last_pitch) > MAX_PITCH_DIFF) {
-            raw_pitch = last_pitch;
-        } else {
-            last_pitch = raw_pitch;
-        }
-    }
-    if (isnan(raw_yaw)) {
-        raw_yaw = last_yaw;
-    } else {
-        if (abs(raw_yaw - last_yaw) > MAX_YAW_DIFF) {
-            raw_yaw = last_yaw;
-        } else {
-            last_yaw = raw_yaw;
-        }
-    }
-    Rotation currentRotation;
-    currentRotation.yaw = raw_yaw;
-    currentRotation.pitch = raw_pitch;
-    return currentRotation;
+  imu::Quaternion quat = bno.getQuat();
+  imu::Vector<3> eul = quat.toEuler();
+  float raw_yaw = eul.z() * (180.0 / PI) - correction_angle;
+  float raw_pitch = eul.y() * (180.0 / PI);
+
+  static float last_yaw = 0;
+  static float last_pitch = 0;
+
+  if (isnan(raw_pitch) || abs(raw_pitch - last_pitch) > MAX_PITCH_DIFF) {
+    raw_pitch = last_pitch;
+  } else {
+    last_pitch = raw_pitch;
+  }
+
+  if (isnan(raw_yaw) || abs(raw_yaw - last_yaw) > MAX_YAW_DIFF) {
+    raw_yaw = last_yaw;
+  } else {
+    last_yaw = raw_yaw;
+  }
+
+  return {raw_yaw, raw_pitch};
 }
 
+float getAccelY() {
+  imu::Vector<3> lin_accel = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+  return lin_accel.y();
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("INIT SETUP");
+
+  if (init_pid()) {
+    Serial.println("PID setup fehlgeschlagen");
+    while (true);
+  }
+
+  init_servo();
+
+  if (init_imu() == 0) {
+    Serial.println("IMU setup fehlgeschlagen");
+    while (true);
+  }
+
+  init_SPIFFS();
+
+}
 
 void loop() {
   Rotation rot = getRotation();
-  computeY(rot.yaw);
-  computeX(rot.pitch);
-  //displayCalStatus();
-  if (calibrated or !calibrated){
-    computeX(rot.yaw);
-    computeY(rot.pitch);
+  displayCalStatus();
+
+  if (!calibrated && !ap_mode) {
+    startAccessPoint();
+  }
+  if (calibrated && ap_mode) {
+    stopAccessPoint();
+  }
+  if (ap_mode) {
+    server.handleClient();
+  }
+
+  if (calibrated) {
+  // Datenaufzeichnung auf 8-mal pro Sekunde begrenzen
+    static unsigned long lastImageTime = 0;
+    if (millis() - lastImageTime >= 125) { // 125 ms = 1/8 Sekunde
+      lastImageTime = millis();
+
+      // Daten in den Puffer schreiben
+      buffer += String(millis()) + "," + String(rot.yaw) + "," + String(rot.pitch) + ",";
+      buffer += String(driverOutX) + "," + String(driverOutY) + "," + String(getAccelY()) + "\n";
+    }
+
+    if (millis() - lastFlush >= flushInterval || buffer.length() >= bufferLimit) {
+      File dataFile = SPIFFS.open("/data.csv", FILE_APPEND);
+      if (dataFile) {
+        dataFile.print(buffer); // Puffer in die Datei schreiben
+        dataFile.close();
+        buffer = ""; // Puffer leeren
+      }
+      lastFlush = millis();
+    }
+
+    // Daten in den Puffer schreiben
+    inputX = rot.pitch;
+    inputY = rot.yaw;
+    PID_X.Compute();
+    PID_Y.Compute();
+
     Serial.print("Yaw: ");
     Serial.print(rot.yaw);
     Serial.print(", Pitch: ");
     Serial.println(rot.pitch);
-    sx.write(SX_CENTER-driverOutX);
-    sy.write(SY_CENTER+driverOutY);
-    delay(50);
-  }
+    // Motorwerte einstellen
+    sx.write(SX_CENTER - driverOutX);
+    sy.write(SY_CENTER + driverOutY);
 
+    // Nicht-blockierendes "Delay"
+    static unsigned long lastAction = 0;
+    if (millis() - lastAction >= 100) {
+      lastAction = millis();
+    }
+  }
 }
