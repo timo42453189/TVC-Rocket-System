@@ -43,6 +43,8 @@ double KpX = 0.6, KiX = 0.05, KdX = 0.01;
 double KpY = 0.6, KiY = 0.05, KdY = 0.01;
 double driverOutX, driverOutY;
 
+double OffsetX = 0.0, OffsetY = 0.0;
+
 PID PID_X(&inputX, &driverOutX, &setPoint, KpX, KiX, KdX, DIRECT);
 PID PID_Y(&inputY, &driverOutY, &setPoint, KpY, KiY, KdY, DIRECT);
 
@@ -54,6 +56,7 @@ const char* ap_ssid = "Rocket-Calibration";
 const char* ap_password = "12345678";
 WebServer server(80);
 bool ap_mode = false;
+bool corrected = false;
 
 void startAccessPoint() {
   WiFi.softAP(ap_ssid, ap_password);
@@ -75,6 +78,35 @@ void startAccessPoint() {
   server.begin();
   ap_mode = true;
 }
+
+void saveOffsets(){
+  Rotation r = getRotation();
+  OffsetX = -r.pitch;
+  OffsetY = -r.yaw;
+  corrected = true;
+}
+
+void correctionRequest(){
+  WiFi.softAP(ap_ssid, ap_password);
+  Serial.println("Access Point gestartet!");
+  Serial.print("IP Adresse: ");
+  Serial.println(WiFi.softAPIP());
+
+  server.on("/", []() {
+    String html = "<h1>Offset</h1>";
+    html += "<button onclick=\"location.href='/buttonPressed'\">Die Rakete ist nun gerade</button>";
+    server.send(200, "text/html", html);
+  });
+
+  server.on("/buttonPressed", []() {
+    saveOffsets();
+    server.send(200, "text/plain", "Success!");
+  });
+
+  server.begin();
+  ap_mode = true;
+}
+
 
 void stopAccessPoint() {
   server.stop();
@@ -101,6 +133,7 @@ void displayCalStatus() {
   bno.getCalibration(&sys, &gyro, &accel, &mag);
   if (mag == 3 && sys == 3 && gyro == 3 && accel == 3) {
     calibrated = true;
+    stopAccessPoint();
   }
 }
 
@@ -139,7 +172,7 @@ Rotation getRotation() {
     last_yaw = raw_yaw;
   }
 
-  return {raw_yaw, raw_pitch};
+  return {raw_yaw + OffsetY, raw_pitch + OffsetX};
 }
 
 float getAccelY() {
@@ -167,21 +200,28 @@ void setup() {
 
 }
 
+bool running_main = false;
+
 void loop() {
   Rotation rot = getRotation();
-  displayCalStatus();
 
-  if (!calibrated && !ap_mode) {
+  if (!calibrated && !ap_mode && !running_main) {
     startAccessPoint();
+    Serial.println("START AP");
   }
-  if (calibrated && ap_mode) {
+  if (calibrated && !ap_mode && !corrected && !running_main){
+    Serial.println("OFFSET AP");
+    correctionRequest();
+  }
+  if (calibrated && ap_mode && corrected && !running_main) {
     stopAccessPoint();
   }
   if (ap_mode) {
     server.handleClient();
   }
 
-  if (calibrated) {
+  if (calibrated && corrected) {
+    running_main = true;
   // Datenaufzeichnung auf 8-mal pro Sekunde begrenzen
     static unsigned long lastImageTime = 0;
     if (millis() - lastImageTime >= 125) { // 125 ms = 1/8 Sekunde
